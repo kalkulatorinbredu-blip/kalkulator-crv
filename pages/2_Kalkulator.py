@@ -7,7 +7,7 @@ import base64
 # --- Konfiguracja strony ---
 st.set_page_config(page_title="Kalkulator", page_icon="🧮", layout="wide")
 
-# --- Funkcja tła ---
+# --- Funkcja tła (bez zmian) ---
 def dodaj_tlo(nazwa_pliku):
     try:
         with open(nazwa_pliku, "rb") as image_file:
@@ -33,69 +33,91 @@ def dodaj_tlo(nazwa_pliku):
     except FileNotFoundError:
         st.warning(f"Nie znaleziono pliku tła: {nazwa_pliku}")
 
-# --- Funkcja wczytująca dane (wersja uproszczona i sprawdzona) ---
+# --- Funkcja wczytująca dane (bez zmian) ---
 @st.cache_data
 def wczytaj_dane():
     try:
-        # Ta logika jest identyczna jak w naszym działającym skrypcie testowym
         creds_dict = {
             "type": "service_account",
             "project_id": st.secrets["project_id"],
-            "private_key_id": "", # To pole nie jest krytyczne
+            "private_key_id": "",
             "private_key": st.secrets["private_key"],
             "client_email": st.secrets["client_email"],
-            "client_id": "", # To pole nie jest krytyczne
+            "client_id": "",
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_x509_cert_url": "" # To pole nie jest krytyczne
+            "client_x509_cert_url": ""
         }
         fs = gcsfs.GCSFileSystem(token=creds_dict)
-        
-        # WAŻNE: Wklej tutaj swoją ścieżkę gs:// do pliku z rodowodami
-        sciezka_do_rodowodow = "gs://dane_kalkulator_inbredowy_anna/rodowody.xlsx"
-        
+        sciezka_do_rodowodow = "gs://dane_kalkulator_inbredowy_anna/rodowody.xlsx" # Twoja ścieżka gs://
         with fs.open(sciezka_do_rodowodow) as f:
             df_rodowody = pd.read_excel(f)
-
         df_crv = pd.read_excel('Oferta CRV.xlsx')
-        
         glowna_kolumna_nazwy = 'Bull_name'
         kolumny_przodkow = ['Sire_name', 'Dam_name', 'Maternal_Grand_Sire_name']
         kolumny_do_czyszczenia = [glowna_kolumna_nazwy] + kolumny_przodkow
         for kolumna in kolumny_do_czyszczenia:
             if kolumna in df_rodowody.columns: df_rodowody[kolumna] = df_rodowody[kolumna].astype(str).str.strip()
             if kolumna in df_crv.columns: df_crv[kolumna] = df_crv[kolumna].astype(str).str.strip()
-            
         return df_rodowody, df_crv, glowna_kolumna_nazwy, kolumny_przodkow
     except Exception as e:
         st.error(f"BŁĄD podczas wczytywania danych: {e}")
         st.info("Sprawdź, czy: \n1. Twój lokalny plik .streamlit/secrets.toml zawiera poprawne i uproszczone wartości. \n2. Twoja ścieżka 'gs://' jest prawidłowa.")
         return None, None, None, None
 
-# --- Funkcja sprawdzająca pokrewieństwo ---
-def czy_spokrewnione(nazwa_buhaja1, nazwa_buhaja2, df_rodowody_func):
-    try:
-        wiersz_buhaja1 = df_rodowody_func.loc[df_rodowody_func[glowna_kolumna_nazwy] == nazwa_buhaja1].iloc[0]
-        rodzina1 = {nazwa_buhaja1}.union(set(wiersz_buhaja1[kolumny_przodkow].dropna()))
-        wiersz_buhaja2 = df_rodowody_func.loc[df_rodowody_func[glowna_kolumna_nazwy] == nazwa_buhaja2].iloc[0]
-        rodzina2 = {nazwa_buhaja2}.union(set(wiersz_buhaja2[kolumny_przodkow].dropna()))
-        return len(rodzina1.intersection(rodzina2)) > 0
-    except IndexError:
-        return False
+# --- ZMIANA: Nowa, dokładniejsza funkcja sprawdzająca pokrewieństwo ---
+def czy_spokrewnione(nazwa_buhaja1, nazwa_buhaja2, df_rodowody_func, glowna_kolumna_nazwy):
+    """
+    Sprawdza, czy dwa buhaje są spokrewnione, tworząc dla każdego z nich "zbiór rodzinny"
+    i szukając części wspólnej. Zbiór rodzinny zawiera samego buhaja, jego ojca, matkę,
+    dziadka od strony matki ORAZ dziadka od strony ojca.
+    """
+    def zbierz_rodzine(nazwa_buhaja, df_ref):
+        rodzina = {nazwa_buhaja}
+        try:
+            wiersz_buhaja = df_ref.loc[df_ref[glowna_kolumna_nazwy] == nazwa_buhaja].iloc[0]
+            
+            # Dodaj bezpośrednich przodków z wiersza
+            ojciec = wiersz_buhaja.get('Sire_name')
+            matka = wiersz_buhaja.get('Dam_name')
+            dziadek_matki = wiersz_buhaja.get('Maternal_Grand_Sire_name')
+            
+            if pd.notna(ojciec): rodzina.add(ojciec)
+            if pd.notna(matka): rodzina.add(matka)
+            if pd.notna(dziadek_matki): rodzina.add(dziadek_matki)
+            
+            # NOWA LOGIKA: Znajdź i dodaj dziadka od strony ojca
+            if pd.notna(ojciec):
+                try:
+                    wiersz_ojca = df_ref.loc[df_ref[glowna_kolumna_nazwy] == ojciec].iloc[0]
+                    dziadek_ojca = wiersz_ojca.get('Sire_name') # Ojciec ojca
+                    if pd.notna(dziadek_ojca): rodzina.add(dziadek_ojca)
+                except IndexError:
+                    pass # Ojciec nie został znaleziony w bazie rodowodów
+        except IndexError:
+            pass # Buhaj nie został znaleziony w bazie rodowodów
+        return rodzina
+
+    rodzina1 = zbierz_rodzine(nazwa_buhaja1, df_rodowody_func)
+    rodzina2 = zbierz_rodzine(nazwa_buhaja2, df_rodowody_func)
+    
+    # Jeśli zbiory mają jakikolwiek wspólny element, buhaje są spokrewnione
+    return not rodzina1.isdisjoint(rodzina2)
 
 # --- Główna część aplikacji (Interfejs) ---
 try:
     dodaj_tlo('tlo_kalkulator.jpg')
     st.image('logo.png', width=150)
 except FileNotFoundError:
-    st.warning("Nie znaleziono pliku logo.png lub tlo_kalkulator.jpg. Upewnij się, że są w głównym folderze.")
+    st.warning("Nie znaleziono pliku logo.png lub tlo_kalkulator.jpg.")
 
 st.title("🧮 Kalkulator doboru buhajów")
 
 df_rodowody, df_crv, glowna_kolumna_nazwy, kolumny_przodkow = wczytaj_dane()
 
 if df_rodowody is not None and df_crv is not None:
+    # ... (cała reszta kodu interfejsu pozostaje bez zmian, z jedną małą poprawką w pętli) ...
     st.markdown("---")
     st.header("Krok 1: Twoje stado")
     lista_buhajow_w_rodowodach = sorted(df_rodowody[glowna_kolumna_nazwy].unique())
@@ -110,12 +132,12 @@ if df_rodowody is not None and df_crv is not None:
         wybrane_rasy = st.multiselect("Wybierz interesujące Cię rasy (jedną lub obie):", opcje_ras, default=opcje_ras)
     else:
         wybrane_rasy = []
-        st.info("Nie znaleziono kolumny 'Rasa' w pliku 'Oferta CRV.xlsx'. Filtr rasy jest niedostępny.")
+        st.info("Nie znaleziono kolumny 'Rasa' w pliku 'Oferta CRV.xlsx'.")
 
     st.subheader("Cechy specjalne:")
-    czy_tylko_a2a2 = st.checkbox("Szukaj tylko buhajów z genotypem beta-kazeiny A2A2", help="Wymaga kolumny 'Beta_kazeina'")
-    czy_kappa_ab_bb = st.checkbox("Szukaj tylko buhajów z genotypem kappa-kazeiny AB lub BB", help="Wymaga kolumny 'Kappa_kazeina'")
-    czy_indeks_robotowy = st.checkbox("Szukaj buhajów z wysokim Indeksem Robotowym", help="Filtruje buhaje z 'Wydajnosc_robotowa' >= 98 oraz 'Szybkosc_doju' >= 96")
+    czy_tylko_a2a2 = st.checkbox("Tylko beta-kazeina A2A2", help="Wymaga kolumny 'Beta_kazeina'")
+    czy_kappa_ab_bb = st.checkbox("Tylko kappa-kazeina AB lub BB", help="Wymaga kolumny 'Kappa_kazeina'")
+    czy_indeks_robotowy = st.checkbox("Wysoki Indeks Robotowy", help="Filtruje 'Wydajnosc_robotowa' >= 98 oraz 'Szybkosc_doju' >= 96")
 
     st.markdown("---")
     st.subheader("Dodatkowe cechy (indeksy):")
@@ -154,13 +176,14 @@ if df_rodowody is not None and df_crv is not None:
 
                 niespokrewnione_buhaje = []
                 for index, buhaj_crv in rekomendacje.iterrows():
-                    jest_spokrewniony = any(czy_spokrewnione(buhaj_crv[glowna_kolumna_nazwy], moj_buhaj, df_rodowody) for moj_buhaj in buhaje_w_stadzie)
+                    # ZMIANA: Przekazujemy teraz odpowiednie argumenty do nowej funkcji
+                    jest_spokrewniony = any(czy_spokrewnione(buhaj_crv[glowna_kolumna_nazwy], moj_buhaj, df_rodowody, glowna_kolumna_nazwy) for moj_buhaj in buhaje_w_stadzie)
                     if not jest_spokrewniony:
                         niespokrewnione_buhaje.append(buhaj_crv)
                 
                 st.header("Wyniki:")
                 if not niespokrewnione_buhaje:
-                    st.error("Brak buhajów spełniających wszystkie kryteria. Spróbuj poluzować wymagania.")
+                    st.error("Brak buhajów spełniających wszystkie kryteria.")
                 else:
                     st.success(f"Znaleziono {len(niespokrewnione_buhaje)} pasujących buhajów:")
                     wyniki_df = pd.DataFrame(niespokrewnione_buhaje)
