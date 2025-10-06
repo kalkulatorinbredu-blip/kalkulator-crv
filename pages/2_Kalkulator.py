@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import gcsfs
+import json
 import base64
 
 # --- Konfiguracja strony ---
@@ -28,21 +30,36 @@ def dodaj_tlo(nazwa_pliku):
     unsafe_allow_html=True
     )
 
-# --- Wczytywanie danych ---
+# --- Wczytywanie danych z użyciem bezpiecznego klucza ---
 @st.cache_data
 def wczytaj_dane():
     try:
-        df_rodowody = pd.read_excel('rodowody.xlsx')
+        # Konwertujemy sekret Streamlit do formatu, który rozumie biblioteka Google
+        creds_dict = st.secrets.to_dict()
+        fs = gcsfs.GCSFileSystem(token=creds_dict)
+        
+        # WAŻNE: Podaj tutaj ścieżkę do pliku w formacie gs://nazwa-bucketu/nazwa-pliku
+        # Przykład: sciezka_do_rodowodow = 'gs://dane-kalkulator-crv-ania/rodowody.xlsx'
+        sciezka_do_rodowodow = "gs://dane_kalkulator_inbredowy_anna/rodowody.xlsx"
+        
+        with fs.open(sciezka_do_rodowodow) as f:
+            df_rodowody = pd.read_excel(f)
+
+        # Wczytywanie pliku CRV pozostaje bez zmian (z lokalnego pliku na GitHub)
         df_crv = pd.read_excel('Oferta CRV.xlsx')
+        
+        # Reszta czyszczenia danych
         glowna_kolumna_nazwy = 'Bull_name'
         kolumny_przodkow = ['Sire_name', 'Dam_name', 'Maternal_Grand_Sire_name']
         kolumny_do_czyszczenia = [glowna_kolumna_nazwy] + kolumny_przodkow
         for kolumna in kolumny_do_czyszczenia:
             if kolumna in df_rodowody.columns: df_rodowody[kolumna] = df_rodowody[kolumna].astype(str).str.strip()
             if kolumna in df_crv.columns: df_crv[kolumna] = df_crv[kolumna].astype(str).str.strip()
+            
         return df_rodowody, df_crv, glowna_kolumna_nazwy, kolumny_przodkow
-    except FileNotFoundError as e:
-        st.error(f"BŁĄD: Plik '{e.filename}' nie został znaleziony.")
+    except Exception as e:
+        st.error(f"BŁĄD podczas wczytywania danych z chmury: {e}")
+        st.info("Sprawdź, czy tajny klucz (secrets) jest poprawnie wklejony w ustawieniach aplikacji Streamlit oraz czy ścieżka 'gs://' jest prawidłowa.")
         return None, None, None, None
 
 df_rodowody, df_crv, glowna_kolumna_nazwy, kolumny_przodkow = wczytaj_dane()
