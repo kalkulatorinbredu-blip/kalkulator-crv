@@ -9,56 +9,69 @@ st.set_page_config(page_title="Kalkulator", page_icon="🧮", layout="wide")
 
 # --- Funkcja tła ---
 def dodaj_tlo(nazwa_pliku):
-    with open(nazwa_pliku, "rb") as image_file:
-        encoded_string = base64.b64encode(image_file.read()).decode()
-    st.markdown(
-    f"""
-    <style>
-    .stApp {{
-        background-image: linear-gradient(to bottom, white 50%, rgba(255,255,255,0) 100%),
-                          linear-gradient(rgba(255,255,255,0.7), rgba(255,255,255,0.7)),
-                          url(data:image/jpg;base64,{encoded_string});
-        background-position: bottom;
-        background-repeat: no-repeat;
-        background-size: cover;
-    }}
-    header {{
-        background-color: transparent !important;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True
-    )
+    try:
+        with open(nazwa_pliku, "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode()
+        st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background-image: linear-gradient(to bottom, white 50%, rgba(255,255,255,0) 100%),
+                              linear-gradient(rgba(255,255,255,0.7), rgba(255,255,255,0.7)),
+                              url(data:image/jpg;base64,{encoded_string});
+            background-position: bottom;
+            background-repeat: no-repeat;
+            background-size: cover;
+        }}
+        header {{
+            background-color: transparent !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True
+        )
+    except FileNotFoundError:
+        st.warning(f"Nie znaleziono pliku tła: {nazwa_pliku}")
 
-# --- Wczytywanie danych z użyciem bezpiecznego klucza (FINALNA WERSJA) ---
+# --- Funkcja wczytująca dane (wersja uproszczona i sprawdzona) ---
 @st.cache_data
 def wczytaj_dane():
     try:
-        # POPRAWNA WERSJA: Mówimy aplikacji, aby szukała sekretów w sekcji [gcp_creds]
-        creds = st.secrets["gcp_creds"]
-        fs = gcsfs.GCSFileSystem(token=creds)
-
-        sciezka_do_rodowodow = "TUTAJ_WKLEJ_SWOJĄ_ŚCIEŻKĘ_GS" # Upewnij się, że Twoja ścieżka gs:// jest tu wklejona
-
+        # Ta logika jest identyczna jak w naszym działającym skrypcie testowym
+        creds_dict = {
+            "type": "service_account",
+            "project_id": st.secrets["project_id"],
+            "private_key_id": "", # To pole nie jest krytyczne
+            "private_key": st.secrets["private_key"],
+            "client_email": st.secrets["client_email"],
+            "client_id": "", # To pole nie jest krytyczne
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": "" # To pole nie jest krytyczne
+        }
+        fs = gcsfs.GCSFileSystem(token=creds_dict)
+        
+        # WAŻNE: Wklej tutaj swoją ścieżkę gs:// do pliku z rodowodami
+        sciezka_do_rodowodow = "gs://dane_kalkulator_inbredowy_anna/rodowody.xlsx"
+        
         with fs.open(sciezka_do_rodowodow) as f:
             df_rodowody = pd.read_excel(f)
 
         df_crv = pd.read_excel('Oferta CRV.xlsx')
-
+        
         glowna_kolumna_nazwy = 'Bull_name'
         kolumny_przodkow = ['Sire_name', 'Dam_name', 'Maternal_Grand_Sire_name']
         kolumny_do_czyszczenia = [glowna_kolumna_nazwy] + kolumny_przodkow
         for kolumna in kolumny_do_czyszczenia:
             if kolumna in df_rodowody.columns: df_rodowody[kolumna] = df_rodowody[kolumna].astype(str).str.strip()
             if kolumna in df_crv.columns: df_crv[kolumna] = df_crv[kolumna].astype(str).str.strip()
-
+            
         return df_rodowody, df_crv, glowna_kolumna_nazwy, kolumny_przodkow
     except Exception as e:
-        st.error(f"BŁĄD podczas wczytywania danych z chmury: {e}")
-        st.info("Sprawdź, czy sekrety w Streamlit Cloud są poprawnie sformatowane (z nagłówkiem [gcp_creds]) oraz czy ścieżka 'gs://' jest prawidłowa.")
+        st.error(f"BŁĄD podczas wczytywania danych: {e}")
+        st.info("Sprawdź, czy: \n1. Twój lokalny plik .streamlit/secrets.toml zawiera poprawne i uproszczone wartości. \n2. Twoja ścieżka 'gs://' jest prawidłowa.")
         return None, None, None, None
-
-df_rodowody, df_crv, glowna_kolumna_nazwy, kolumny_przodkow = wczytaj_dane()
 
 # --- Funkcja sprawdzająca pokrewieństwo ---
 def czy_spokrewnione(nazwa_buhaja1, nazwa_buhaja2, df_rodowody_func):
@@ -71,10 +84,16 @@ def czy_spokrewnione(nazwa_buhaja1, nazwa_buhaja2, df_rodowody_func):
     except IndexError:
         return False
 
-# --- Interfejs kalkulatora ---
-dodaj_tlo('tlo_kalkulator.jpg')
-st.image('logo.png', width=150)
+# --- Główna część aplikacji (Interfejs) ---
+try:
+    dodaj_tlo('tlo_kalkulator.jpg')
+    st.image('logo.png', width=150)
+except FileNotFoundError:
+    st.warning("Nie znaleziono pliku logo.png lub tlo_kalkulator.jpg. Upewnij się, że są w głównym folderze.")
+
 st.title("🧮 Kalkulator doboru buhajów")
+
+df_rodowody, df_crv, glowna_kolumna_nazwy, kolumny_przodkow = wczytaj_dane()
 
 if df_rodowody is not None and df_crv is not None:
     st.markdown("---")
