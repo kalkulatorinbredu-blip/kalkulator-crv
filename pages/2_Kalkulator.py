@@ -174,9 +174,9 @@ if df_rodowody is not None and df_crv is not None:
     kryteria_suwakow = []
     if wybrane_cechy:
         for cecha in wybrane_cechy:
-            min_val = float(df_crv[cecha].dropna().min())
-            max_val = float(df_crv[cecha].dropna().max())
-            median_val = float(df_crv[cecha].dropna().median())
+            min_val = int(df_crv[cecha].dropna().min())
+            max_val = int(df_crv[cecha].dropna().max())
+            median_val = int(df_crv[cecha].dropna().median())
             prog = st.slider(f"Min. wartość dla '{cecha}':", min_value=min_val, max_value=max_val, value=median_val)
             kryteria_suwakow.append({'cecha': cecha, 'prog': prog})
 
