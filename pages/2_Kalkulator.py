@@ -171,14 +171,30 @@ if df_rodowody is not None and df_crv is not None:
     
     wybrane_cechy = st.multiselect("Wybierz cechy do filtrowania za pomocą suwaków:", kolumny_cech)
 
-    kryteria_suwakow = []
-    if wybrane_cechy:
-        for cecha in wybrane_cechy:
-            min_val = int(df_crv[cecha].dropna().min())
-            max_val = int(df_crv[cecha].dropna().max())
-            median_val = int(df_crv[cecha].dropna().median())
-            prog = st.slider(f"Min. wartość dla '{cecha}':", min_value=min_val, max_value=max_val, value=median_val)
-            kryteria_suwakow.append({'cecha': cecha, 'prog': prog})
+kryteria_suwakow = []
+if wybrane_cechy:
+    for cecha in wybrane_cechy:
+        # Sprawdzamy, czy nazwa cechy zawiera znak '%'
+        if '%' in cecha:
+            # Jeśli tak, tworzymy suwak dla wartości dziesiętnych
+            prog = st.slider(
+                f"Min. wartość dla '{cecha}':",
+                min_value=float(df_crv[cecha].min()),
+                max_value=float(df_crv[cecha].max()),
+                value=float(df_crv[cecha].median()),
+                step=0.01,  # <-- Krok dziesiętny
+                format="%.2f" # <-- Format wyświetlania z dwoma miejscami po przecinku
+            )
+        else:
+            # W przeciwnym razie, tworzymy suwak dla liczb całkowitych
+            prog = st.slider(
+                f"Min. wartość dla '{cecha}':",
+                min_value=int(df_crv[cecha].min()),
+                max_value=int(df_crv[cecha].max()),
+                value=int(df_crv[cecha].median()),
+                step=1
+            )
+        kryteria_suwakow.append({'cecha': cecha, 'prog': prog})
 
     st.markdown("---")
     
