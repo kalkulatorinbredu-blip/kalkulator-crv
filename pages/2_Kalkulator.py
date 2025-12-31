@@ -3,6 +3,12 @@ import pandas as pd
 import gcsfs
 import json
 import base64
+import os
+
+# --- KONFIGURACJA ŚCIEŻEK ---
+# Zakładamy, że plik JSON jest teraz w tym samym folderze co skrypt
+SCIEZKA_LOKALNA_DO_KLUCZA_JSON = "noted-wares-474211-g2-e39e145b3780.json"
+SCIEZKA_GS_DO_RODOWODOW = "gs://dane_kalkulator_inbredowy_anna/rodowody.xlsx"
 
 # --- Konfiguracja strony ---
 st.set_page_config(page_title="Kalkulator", page_icon="🧮", layout="wide")
@@ -30,211 +36,163 @@ def dodaj_tlo(nazwa_pliku):
         """,
         unsafe_allow_html=True
         )
-    except FileNotFoundError:
-        st.warning(f"Nie znaleziono pliku tła: {nazwa_pliku}")
+    except:
+        pass
 
-# --- Funkcja wczytująca i czyszcząca dane ---
+# --- FUNKCJA WCZYTUJĄCA DANE ---
 @st.cache_data
 def wczytaj_dane():
     try:
-        # === WCZYTYWANIE Z GOOGLE CLOUD STORAGE (WERSJA DOCELOWA) ===
-        creds_dict = {
-            "type": "service_account",
-            "project_id": st.secrets["project_id"],
-            "private_key_id": st.secrets.get("private_key_id", ""),
-            "private_key": st.secrets["private_key"],
-            "client_email": st.secrets["client_email"],
-            "client_id": st.secrets.get("client_id", ""),
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_x509_cert_url": st.secrets.get("client_x509_cert_url", "")
-        }
-        fs = gcsfs.GCSFileSystem(token=creds_dict)
+        if 'STREAMLIT_SERVER_RUNNING_ON' in os.environ and os.environ['STREAMLIT_SERVER_RUNNING_ON'] == 'streamlit-cloud':
+            creds_dict = {
+                "type": "service_account", "project_id": st.secrets["project_id"],
+                "private_key": st.secrets["private_key"], "client_email": st.secrets["client_email"],
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+            fs = gcsfs.GCSFileSystem(token=creds_dict)
+        else:
+            # Sprawdzenie czy plik istnieje, żeby uniknąć błędu Operation Not Permitted
+            if not os.path.exists(SCIEZKA_LOKALNA_DO_KLUCZA_JSON):
+                st.error(f"Nie znaleziono pliku klucza: {SCIEZKA_LOKALNA_DO_KLUCZA_JSON} w folderze projektu!")
+                return None, None, None, None
+                
+            with open(SCIEZKA_LOKALNA_DO_KLUCZA_JSON, 'r') as f:
+                klucz_json = json.load(f)
+            fs = gcsfs.GCSFileSystem(token=klucz_json)
         
-        # VVVV WAŻNE: Wklej tutaj swoją ścieżkę do pliku z rodowodami VVVV
-        sciezka_do_rodowodow = "gs://dane_kalkulator_inbredowy_anna/rodowody.xlsx" 
-        
-        with fs.open(sciezka_do_rodowodow) as f:
-             df_rodowody = pd.read_excel(f)
-        
-        # Plik 'Oferta CRV.xlsx' musi znajdować się w Twoim repozytorium GitHub
+        st.info("Wczytuję dane rodowodowe... Proszę czekać.")
+        with fs.open(SCIEZKA_GS_DO_RODOWODOW) as f:
+            df_rodowody = pd.read_excel(f, dtype=str)
+
         df_crv = pd.read_excel('Oferta CRV.xlsx')
-
-        # === WCZYTYWANIE LOKALNE (DO TESTÓW) - WYŁĄCZONE ===
-        # df_rodowody = pd.read_excel('rodowody.xlsx')
-        # df_crv = pd.read_excel('Oferta CRV.xlsx')
         
-        # Definicja kluczowych kolumn
-        glowna_kolumna_id = 'ID_bull'
-        glowna_kolumna_nazwy = 'Bull_name'
-        kolumny_przodkow_id = ['ID_Sire', 'ID_Dam', 'ID_Maternal_Grand_Sire']
-
-        # Normalizacja kolumn ID na wspólny format (string)
-        id_cols_to_normalize = [glowna_kolumna_id] + kolumny_przodkow_id
+        df_rodowody.columns = df_rodowody.columns.str.strip()
+        df_crv.columns = df_crv.columns.str.strip()
+        
         for df in [df_rodowody, df_crv]:
-            for col in id_cols_to_normalize:
+            for col in ['ID_bull', 'ID_Sire', 'ID_Dam', 'Bull_name', 'Sire_name', 'Dam_name']:
                 if col in df.columns:
-                    df.loc[:, col] = df[col].astype(str).str.strip()
+                    df[col] = df[col].astype(str).str.strip().replace('nan', 'BRAK')
 
-        # Czyszczenie kolumn z nazwami
-        kolumny_z_nazwami_do_czyszczenia = [
-            'Bull_name', 'Bull_short_name', 'Sire_name', 'Sire_short_name',
-            'Dam_name', 'Maternal_Grand_Sire_name', 'Maternal_Grand_Sire_short_name'
-        ]
-        for kolumna in kolumny_z_nazwami_do_czyszczenia:
-            if kolumna in df_rodowody.columns:
-                df_rodowody.loc[:, kolumna] = df_rodowody[kolumna].fillna('').astype(str).str.strip().str.upper()
-            if kolumna in df_crv.columns:
-                df_crv.loc[:, kolumna] = df_crv[kolumna].fillna('').astype(str).str.strip().str.upper()
+        df_rodowody = df_rodowody[df_rodowody['ID_bull'] != "BRAK"].dropna(subset=['ID_bull', 'Bull_name']).drop_duplicates(subset=['ID_bull'])
 
-        return df_rodowody, df_crv, glowna_kolumna_id, glowna_kolumna_nazwy, kolumny_przodkow_id
-
-    except Exception as e:
-        st.error(f"KRYTYCZNY BŁĄD podczas wczytywania danych: {e}")
-        st.info("Sprawdź, czy: \n1. Ścieżka 'gs://' jest poprawna. \n2. Plik 'Oferta CRV.xlsx' jest w repozytorium. \n3. Sekrety w panelu Streamlit Cloud są poprawnie skonfigurowane.")
-        return None, None, None, None, None
-
-# --- Silnik sprawdzający pokrewieństwo (wersja ostateczna) ---
-@st.cache_data
-def czy_spokrewnione(id_buhaja1, id_buhaja2, _df_rodowody, glowna_kolumna_id, kolumny_przodkow_id, max_glebokosc):
-    def _zbierz_przodkow(bull_id, glebokosc, odwiedzone):
-        bull_id = str(bull_id).strip() if pd.notna(bull_id) else None
-        if not bull_id or bull_id in ['NAN', 'NONE', ''] or bull_id in odwiedzone or glebokosc >= max_glebokosc:
-            return set()
+        # POPRAWKA LITERÓWKI: nazwa_do_id_map (zamiast nazwa_to_id_map)
+        nazwa_do_id_map = pd.Series(df_rodowody['ID_bull'].values, index=df_rodowody['Bull_name']).to_dict()
+        id_do_rodzicow_map = pd.Series(zip(df_rodowody['ID_Sire'], df_rodowody['ID_Dam']), index=df_rodowody['ID_bull']).to_dict()
             
+        return df_rodowody, df_crv, nazwa_do_id_map, id_do_rodzicow_map
+    except Exception as e:
+        st.error(f"Błąd krytyczny danych: {e}")
+        return None, None, None, None
+
+# --- SILNIK ANALIZY POKREWIEŃSTWA ---
+def czy_spokrewnione(id_buhaja1, id_buhaja2, _id_do_rodzicow_map, max_glebokosc):
+    def _zbierz_przodkow(bull_id, glebokosc, odwiedzone):
+        if not isinstance(bull_id, str) or bull_id in ["BRAK", "nan", ""] or bull_id in odwiedzone or glebokosc > max_glebokosc:
+            return set()
         odwiedzone.add(bull_id)
         przodkowie = {bull_id}
-        
-        try:
-            wiersz = _df_rodowody.loc[_df_rodowody[glowna_kolumna_id] == bull_id].iloc[0]
-            
-            for kolumna_przodka in kolumny_przodkow_id:
-                if kolumna_przodka in wiersz:
-                    przodek_id = str(wiersz.get(kolumna_przodka)).strip()
-                    przodkowie.update(_zbierz_przodkow(przodek_id, glebokosc + 1, odwiedzone))
-        except IndexError:
-            pass
+        ojciec, matka = _id_do_rodzicow_map.get(bull_id, ("BRAK", "BRAK"))
+        przodkowie.update(_zbierz_przodkow(ojciec, glebokosc + 1, odwiedzone))
+        przodkowie.update(_zbierz_przodkow(matka, glebokosc + 1, odwiedzone))
         return przodkowie
-
-    id1_norm = str(id_buhaja1).strip()
-    id2_norm = str(id_buhaja2).strip()
     
-    drzewo1 = _zbierz_przodkow(id1_norm, 0, set())
-    drzewo2 = _zbierz_przodkow(id2_norm, 0, set())
-    
-    return not drzewo1.isdisjoint(drzewo2)
+    set1 = _zbierz_przodkow(id_buhaja1, 1, set())
+    set2 = _zbierz_przodkow(id_buhaja2, 1, set())
+    return not set1.isdisjoint(set2)
 
-# --- Główna część aplikacji (Interfejs) ---
-try:
-    dodaj_tlo('tlo_kalkulator.jpg')
-    st.image('logo.png', width=150)
-except Exception:
-    pass
-
+# --- START APLIKACJI ---
+dodaj_tlo('tlo_kalkulator.jpg')
 st.title("🧮 Kalkulator doboru buhajów")
 
-df_rodowody, df_crv, glowna_kolumna_id, glowna_kolumna_nazwy, kolumny_przodkow_id = wczytaj_dane()
+df_rodowody, df_crv, nazwa_do_id_map, id_do_rodzicow_map = wczytaj_dane()
 
-if df_rodowody is not None and df_crv is not None:
+if df_rodowody is not None and nazwa_do_id_map is not None:
+    # Sidebar
     st.sidebar.header("Ustawienia analizy")
-    glebokosc_analizy = st.sidebar.slider("Głębokość analizy (pokolenia):", min_value=1, max_value=8, value=4, help="Jak głęboko program ma szukać wspólnych przodków.")
+    prog_pokrewienstwa = st.sidebar.selectbox(
+        "Maksymalne dopuszczalne pokrewieństwo:",
+        options=[4, 6, 10, 12],
+        format_func=lambda x: f"poniżej {x}%",
+        index=1
+    )
+    mapowanie_glebokosci = {4: 5, 6: 4, 10: 3, 12: 2}
+    glebokosc_analizy = mapowanie_glebokosci[prog_pokrewienstwa]
     
     st.markdown("---")
     st.header("Krok 1: Twoje stado")
-    
-    df_rodowody['display_name'] = df_rodowody[glowna_kolumna_nazwy].astype(str) + " (" + df_rodowody[glowna_kolumna_id].astype(str) + ")"
-    lista_do_wyboru = sorted(df_rodowody['display_name'].unique())
-    wybrane_etykiety = st.multiselect("Wybierz buhaje, których używałeś w swoim stadzie:", lista_do_wyboru)
+    wybrane_nazwy = st.multiselect("Wybierz buhaje używane w stadzie:", sorted(nazwa_do_id_map.keys()))
 
     st.markdown("---")
-    st.header("Krok 2: Kryteria selekcji")
-
-    st.subheader("Rasa:")
-    if 'Rasa' in df_crv.columns:
-        opcje_ras = sorted(df_crv['Rasa'].dropna().unique().tolist())
-        wybrane_rasy = st.multiselect("Wybierz interesujące Cię rasy:", opcje_ras, default=opcje_ras)
-    else:
-        wybrane_rasy = []
-
-    st.subheader("Cechy specjalne:")
-    czy_tylko_a2a2 = st.checkbox("Tylko beta-kazeina A2A2")
-    czy_kappa_ab_bb = st.checkbox("Tylko kappa-kazeina AB lub BB")
-    czy_indeks_robotowy = st.checkbox("Wysoki Indeks Robotowy")
+    st.header("Krok 2: Kryteria selekcji (opcjonalne)")
     
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Rasa:")
+        rasy_dostepne = sorted(df_crv['Rasa'].dropna().unique().tolist()) if 'Rasa' in df_crv.columns else []
+        wybrane_rasy = st.multiselect("Wybierz rasy:", rasy_dostepne)
+    
+    with c2:
+        st.subheader("Cechy specjalne:")
+        a2a2 = st.checkbox("Tylko A2A2")
+        kappa = st.checkbox("Tylko Kappa AB/BB")
+        robot = st.checkbox("Wysoki Indeks Robotowy")
+
     st.markdown("---")
-    st.subheader("Dodatkowe cechy (indeksy):")
-    
-    potencjalne_cechy = df_crv.select_dtypes(include=['number']).columns.tolist()
-    wykluczone_slowa = ['id', 'rok', 'numer']
-    kolumny_cech = sorted([col for col in potencjalne_cechy if not any(slowo in col.lower() for slowo in wykluczone_slowa)])
-    
-    wybrane_cechy = st.multiselect("Wybierz cechy do filtrowania za pomocą suwaków:", kolumny_cech)
+    st.subheader("Dodatkowe indeksy (opcjonalne):")
+    kolumny_num = sorted(df_crv.select_dtypes(include=['number']).columns.tolist())
+    wybrane_cechy = st.multiselect("Dodaj suwaki dla cech:", kolumny_num)
 
-kryteria_suwakow = []
-if wybrane_cechy:
+    kryteria_suwakow = []
     for cecha in wybrane_cechy:
-        # Sprawdzamy, czy nazwa cechy zawiera znak '%'
-        if '%' in cecha:
-            # Jeśli tak, tworzymy suwak dla wartości dziesiętnych
-            prog = st.slider(
-                f"Min. wartość dla '{cecha}':",
-                min_value=float(df_crv[cecha].min()),
-                max_value=float(df_crv[cecha].max()),
-                value=float(df_crv[cecha].median()),
-                step=0.01,  # <-- Krok dziesiętny
-                format="%.2f" # <-- Format wyświetlania z dwoma miejscami po przecinku
-            )
-        else:
-            # W przeciwnym razie, tworzymy suwak dla liczb całkowitych
-            prog = st.slider(
-                f"Min. wartość dla '{cecha}':",
-                min_value=int(df_crv[cecha].min()),
-                max_value=int(df_crv[cecha].max()),
-                value=int(df_crv[cecha].median()),
-                step=1
-            )
-        kryteria_suwakow.append({'cecha': cecha, 'prog': prog})
+        dane_c = pd.to_numeric(df_crv[cecha], errors='coerce').dropna()
+        if not dane_c.empty:
+            if '%' in cecha:
+                v = st.slider(f"Min. {cecha}", float(dane_c.min()), float(dane_c.max()), float(dane_c.median()), 0.01, "%.2f")
+            else:
+                v = st.slider(f"Min. {cecha}", int(dane_c.min()), int(dane_c.max()), int(dane_c.median()), 1)
+            kryteria_suwakow.append((cecha, v))
 
     st.markdown("---")
-    
+
     if st.button("🐮 Znajdź pasujące buhaje!", type="primary", use_container_width=True):
-        buhaje_w_stadzie_id = df_rodowody[df_rodowody['display_name'].isin(wybrane_etykiety)][glowna_kolumna_id].tolist()
-
-        if not buhaje_w_stadzie_id:
-            st.warning("Musisz wybrać przynajmniej jednego buhaja ze swojego stada.")
+        if not wybrane_nazwy:
+            st.warning("Musisz wybrać chociaż jednego buhaja z Twojego stada (Krok 1).")
         else:
-            with st.spinner("Trwa głęboka analiza rodowodów..."):
-                rekomendacje = df_crv.copy()
-                
-                if 'Rasa' in rekomendacje.columns and wybrane_rasy:
-                    rekomendacje = rekomendacje[rekomendacje['Rasa'].isin(wybrane_rasy)]
-                
-                for kryterium in kryteria_suwakow:
-                    rekomendacje = rekomendacje[rekomendacje[kryterium['cecha']] >= kryterium['prog']]
-                
-                niespokrewnione_buhaje = []
-                for _, buhaj_crv in rekomendacje.iterrows():
-                    id_buhaja_crv = buhaj_crv.get(glowna_kolumna_id)
+            with st.spinner("Przeszukuję ofertę i sprawdzam rodowody..."):
+                id_stada = [nazwa_do_id_map[n] for n in wybrane_nazwy if n in nazwa_do_id_map]
+                df_wynik = df_crv.copy()
 
-                    if pd.notna(id_buhaja_crv):
-                        jest_spokrewniony = any(czy_spokrewnione(id_buhaja_crv, moj_buhaj_id, df_rodowody, glowna_kolumna_id, kolumny_przodkow_id, glebokosc_analizy) for moj_buhaj_id in buhaje_w_stadzie_id)
-                        
-                        if not jest_spokrewniony:
-                            niespokrewnione_buhaje.append(buhaj_crv)
-            
-            st.header("Wyniki:")
-            if not niespokrewnione_buhaje:
-                st.error("Nie znaleziono żadnych niespokrewnionych buhajów spełniających podane kryteria.")
-            else:
-                st.success(f"Znaleziono {len(niespokrewnione_buhaje)} pasujących, niespokrewnionych buhajów:")
-                wyniki_df = pd.DataFrame(niespokrewnione_buhaje)
+                if wybrane_rasy:
+                    df_wynik = df_wynik[df_wynik['Rasa'].isin(wybrane_rasy)]
+                if a2a2 and 'Beta_kazeina' in df_wynik.columns:
+                    df_wynik = df_wynik[df_wynik['Beta_kazeina'] == 'A2A2']
+                if kappa and 'Kappa_kazeina' in df_wynik.columns:
+                    df_wynik = df_wynik[df_wynik['Kappa_kazeina'].isin(['AB', 'BB'])]
+                if robot and 'Wydajnosc_robotowa' in df_wynik.columns:
+                    df_wynik = df_wynik[pd.to_numeric(df_wynik['Wydajnosc_robotowa'], errors='coerce') >= 98]
+
+                for cecha, prog in kryteria_suwakow:
+                    df_wynik = df_wynik[pd.to_numeric(df_wynik[cecha], errors='coerce') >= prog]
+
+                finalne = []
+                p_bar = st.progress(0)
+                total = len(df_wynik)
                 
-                kolumny_do_wyswietlenia = [glowna_kolumna_nazwy, glowna_kolumna_id]
-                if 'Rasa' in wyniki_df.columns:
-                    kolumny_do_wyswietlenia.append('Rasa')
+                for i, (idx, wiersz) in enumerate(df_wynik.iterrows()):
+                    id_o = str(wiersz['ID_bull']).strip()
+                    spokrewniony = any(czy_spokrewnione(id_o, id_m, id_do_rodzicow_map, glebokosc_analizy) for id_m in id_stada)
+                    if not spokrewniony:
+                        finalne.append(wiersz)
+                    if total > 0: p_bar.progress((i + 1) / total)
                 
-                kolumny_do_wyswietlenia.extend([k['cecha'] for k in kryteria_suwakow])
-                
-                istniejace_kolumny = [kol for kol in list(dict.fromkeys(kolumny_do_wyswietlenia)) if kol in wyniki_df.columns]
-                st.dataframe(wyniki_df[istniejace_kolumny], use_container_width=True)
+                p_bar.empty()
+                if not finalne:
+                    st.error("Brak buhajów spełniających kryteria.")
+                else:
+                    st.success(f"Znaleziono {len(finalne)} bezpiecznych propozycji!")
+                    res_df = pd.DataFrame(finalne)
+                    
+                    # Pokazujemy tylko wybrane przez użytkownika kolumny + podstawowe
+                    cols_to_show = ['Bull_name', 'Rasa'] + [c for c, p in kryteria_suwakow]
+                    st.dataframe(res_df[[c for c in cols_to_show if c in res_df.columns]], use_container_width=True)
