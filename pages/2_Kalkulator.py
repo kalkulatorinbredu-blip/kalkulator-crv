@@ -138,7 +138,7 @@ if df_rodowody is not None and nazwa_do_id_map is not None:
     wybrane_nazwy = st.multiselect("Wybierz buhaje używane w stadzie:", sorted(nazwa_do_id_map.keys()))
 
     st.markdown("---")
-    st.header("Krok 2: Kryteria selekcji (opcjonalne)")
+    st.header("Krok 2: Kryteria selekcji")
     
     c1, c2 = st.columns(2)
     with c1:
@@ -148,12 +148,12 @@ if df_rodowody is not None and nazwa_do_id_map is not None:
     
     with c2:
         st.subheader("Cechy specjalne:")
-        a2a2 = st.checkbox("Tylko A2A2")
-        kappa = st.checkbox("Tylko Kappa AB/BB")
-        robot = st.checkbox("Wysoki Indeks Robotowy")
+        a2a2 = st.checkbox("Beta-kazeina A2A2")
+        kappa = st.checkbox("Kappa-kazeina AB/BB")
+        robot = st.checkbox("Indeks Robotowy")
 
     st.markdown("---")
-    st.subheader("Dodatkowe indeksy (opcjonalne):")
+    st.subheader("Dodatkowe indeksy:")
     kolumny_num = sorted(df_crv.select_dtypes(include=['number']).columns.tolist())
     wybrane_cechy = st.multiselect("Dodaj suwaki dla cech:", kolumny_num)
 
