@@ -6,7 +6,6 @@ import base64
 import os
 
 # --- KONFIGURACJA ŚCIEŻEK ---
-# Plik JSON musi znajdować się w głównym folderze projektu (obok app.py)
 SCIEZKA_LOKALNA_DO_KLUCZA_JSON = "noted-wares-474211-g2-e39e145b3780.json"
 SCIEZKA_GS_DO_RODOWODOW = "gs://dane_kalkulator_inbredowy_anna/rodowody.xlsx"
 
@@ -43,7 +42,6 @@ def dodaj_tlo(nazwa_pliku):
 @st.cache_data
 def wczytaj_dane():
     try:
-        # Bardziej niezawodne sprawdzenie, czy jesteśmy na Streamlit Cloud
         is_cloud = False
         try:
             if st.secrets and "project_id" in st.secrets:
@@ -52,7 +50,6 @@ def wczytaj_dane():
             is_cloud = False
 
         if is_cloud:
-            # Używamy danych z "Secrets" na Streamlit Cloud
             creds_dict = {
                 "type": "service_account", 
                 "project_id": st.secrets["project_id"],
@@ -62,9 +59,8 @@ def wczytaj_dane():
             }
             fs = gcsfs.GCSFileSystem(token=creds_dict)
         else:
-            # Jesteśmy lokalnie - szukamy pliku JSON
             if not os.path.exists(SCIEZKA_LOKALNA_DO_KLUCZA_JSON):
-                st.error(f"Nie znaleziono pliku klucza: {SCIEZKA_LOKALNA_DO_KLUCZA_JSON} w folderze projektu!")
+                st.error(f"Nie znaleziono pliku klucza: {SCIEZKA_LOKALNA_DO_KLUCZA_JSON}")
                 return None, None, None, None
             
             with open(SCIEZKA_LOKALNA_DO_KLUCZA_JSON, 'r') as f:
@@ -77,20 +73,22 @@ def wczytaj_dane():
 
         df_crv = pd.read_excel('Oferta CRV.xlsx')
         
-        # Standaryzacja nazw kolumn
         df_rodowody.columns = df_rodowody.columns.str.strip()
         df_crv.columns = df_crv.columns.str.strip()
         
-        # ID i nazwy jako tekst bez spacji
         for df in [df_rodowody, df_crv]:
-            for col in ['ID_bull', 'ID_Sire', 'ID_Dam', 'Bull_name', 'Sire_name', 'Dam_name']:
+            for col in ['ID_bull', 'ID_Sire', 'ID_Dam', 'Bull_name']:
                 if col in df.columns:
                     df[col] = df[col].astype(str).str.strip().replace('nan', 'BRAK')
 
         df_rodowody = df_rodowody[df_rodowody['ID_bull'] != "BRAK"].dropna(subset=['ID_bull', 'Bull_name']).drop_duplicates(subset=['ID_bull'])
 
-        # Mapy danych do analizy pokrewieństwa
-        nazwa_do_id_map = pd.Series(df_rodowody['ID_bull'].values, index=df_rodowody['Bull_name']).to_dict()
+        # --- TUTAJ DZIEJE SIĘ MAGIA ---
+        # Tworzymy wirtualną kolumnę do wyświetlania w menu: "NAZWA (NUMER)"
+        df_rodowody['Display_name'] = df_rodowody['Bull_name'] + " (" + df_rodowody['ID_bull'] + ")"
+
+        # Mapa: Kluczem jest "NAZWA (NUMER)", a wartością samo "ID_bull"
+        nazwa_do_id_map = pd.Series(df_rodowody['ID_bull'].values, index=df_rodowody['Display_name']).to_dict()
         id_do_rodzicow_map = pd.Series(zip(df_rodowody['ID_Sire'], df_rodowody['ID_Dam']), index=df_rodowody['ID_bull']).to_dict()
             
         return df_rodowody, df_crv, nazwa_do_id_map, id_do_rodzicow_map
@@ -121,7 +119,6 @@ st.title("🧮 Kalkulator doboru buhajów")
 df_rodowody, df_crv, nazwa_do_id_map, id_do_rodzicow_map = wczytaj_dane()
 
 if df_rodowody is not None and nazwa_do_id_map is not None:
-    # Sidebar - Wybór progu pokrewieństwa
     st.sidebar.header("Ustawienia analizy")
     prog_pokrewienstwa = st.sidebar.selectbox(
         "Maksymalne dopuszczalne pokrewieństwo:",
@@ -129,12 +126,12 @@ if df_rodowody is not None and nazwa_do_id_map is not None:
         format_func=lambda x: f"poniżej {x}%",
         index=1
     )
-    # Mapowanie progu na głębokość szukania przodków
     mapowanie_glebokosci = {4: 5, 6: 4, 10: 3, 12: 2}
     glebokosc_analizy = mapowanie_glebokosci[prog_pokrewienstwa]
     
     st.markdown("---")
     st.header("Krok 1: Twoje stado")
+    # Tutaj multiselect pokaże "Nazwa (Numer)", ale nazwa_do_id_map zwróci samo ID
     wybrane_nazwy = st.multiselect("Wybierz buhaje używane w stadzie:", sorted(nazwa_do_id_map.keys()))
 
     st.markdown("---")
@@ -150,7 +147,7 @@ if df_rodowody is not None and nazwa_do_id_map is not None:
         st.subheader("Cechy specjalne:")
         a2a2 = st.checkbox("Beta-kazeina A2A2")
         kappa = st.checkbox("Kappa-kazeina AB/BB")
-        robot = st.checkbox("Indeks Robotowy")
+        robot = st.checkbox("Indeks robotowy")
 
     st.markdown("---")
     st.subheader("Dodatkowe indeksy:")
@@ -161,7 +158,6 @@ if df_rodowody is not None and nazwa_do_id_map is not None:
     for cecha in wybrane_cechy:
         dane_c = pd.to_numeric(df_crv[cecha], errors='coerce').dropna()
         if not dane_c.empty:
-            # Rozróżnienie suwaka dziesiętnego (%) od całkowitego
             if '%' in cecha:
                 v = st.slider(f"Min. {cecha}", float(dane_c.min()), float(dane_c.max()), float(dane_c.median()), 0.01, "%.2f")
             else:
@@ -178,7 +174,6 @@ if df_rodowody is not None and nazwa_do_id_map is not None:
                 id_stada = [nazwa_do_id_map[n] for n in wybrane_nazwy if n in nazwa_do_id_map]
                 df_wynik = df_crv.copy()
 
-                # Filtry opcjonalne (zastosowane tylko jeśli wybrane)
                 if wybrane_rasy:
                     df_wynik = df_wynik[df_wynik['Rasa'].isin(wybrane_rasy)]
                 if a2a2 and 'Beta_kazeina' in df_wynik.columns:
@@ -191,7 +186,6 @@ if df_rodowody is not None and nazwa_do_id_map is not None:
                 for cecha, prog in kryteria_suwakow:
                     df_wynik = df_wynik[pd.to_numeric(df_wynik[cecha], errors='coerce') >= prog]
 
-                # Analiza pokrewieństwa
                 finalne = []
                 p_bar = st.progress(0)
                 total = len(df_wynik)
@@ -209,7 +203,5 @@ if df_rodowody is not None and nazwa_do_id_map is not None:
                 else:
                     st.success(f"Znaleziono {len(finalne)} bezpiecznych propozycji!")
                     res_df = pd.DataFrame(finalne)
-                    
-                    # Kolumny do wyświetlenia w tabeli wyników
                     cols_to_show = ['Bull_name', 'Rasa'] + [c for c, p in kryteria_suwakow]
                     st.dataframe(res_df[[c for c in cols_to_show if c in res_df.columns]], use_container_width=True)
