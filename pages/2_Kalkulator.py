@@ -80,32 +80,36 @@ df_rodowody, df_crv = wczytaj_dane()
 # Sprawdzenie czy dane są dostępne, zanim kod pójdzie dalej
 if df_rodowody is not None:
     st.success("✅ Baza załadowana!")
-    # Tutaj idzie reszta Twojego kodu kalkulatora...
 
-        # --- Dalsza część standaryzacji (renaming i mapy) zostaje bez zmian ---
+    # --- Dalsza część standaryzacji (renaming i mapy) ---
 
-        # Normalizacja nazw kolumn
-        rename_map = {'ID_Bull': 'ID_bull', 'ID_sire': 'ID_Sire', 'ID_sire_of_dam': 'ID_Maternal_Grand_Sire'}
-        df_rodowody = df_rodowody.rename(columns=rename_map)
-        df_crv = df_crv.rename(columns=rename_map)
-        
-        cols_to_std = ['ID_bull', 'ID_Sire', 'ID_Dam', 'Bull_name', 'ID_Maternal_Grand_Sire', 'ID_Maternal_Grand_Dam_Sire']
-        for df in [df_rodowody, df_crv]:
-            for col in cols_to_std:
-                if col in df.columns:
-                    df[col] = df[col].astype(str).str.strip().replace(['nan', 'None', '', 'nan '], 'BRAK')
+    # 1. Normalizacja nazw kolumn
+    rename_map = {
+        'ID_Bull': 'ID_bull', 
+        'ID_sire': 'ID_Sire', 
+        'ID_sire_of_dam': 'ID_Maternal_Grand_Sire'
+    }
+    df_rodowody = df_rodowody.rename(columns=rename_map)
+    df_crv = df_crv.rename(columns=rename_map)
+    
+    # 2. Standaryzacja tekstów (wyrównane wcięcia)
+    cols_to_std = ['ID_bull', 'ID_Sire', 'ID_Dam', 'Bull_name', 'ID_Maternal_Grand_Sire', 'ID_Maternal_Grand_Dam_Sire']
+    for df_temp in [df_rodowody, df_crv]:
+        for col in cols_to_std:
+            if col in df_temp.columns:
+                df_temp[col] = df_temp[col].astype(str).str.strip().replace(['nan', 'None', '', 'nan '], 'BRAK')
 
-        df_rodowody = df_rodowody[df_rodowody['ID_bull'] != "BRAK"].drop_duplicates(subset=['ID_bull'])
-        df_rodowody['Display_name'] = df_rodowody['Bull_name'] + " (" + df_rodowody['ID_bull'] + ")"
-        
-        nazwa_to_id_map = pd.Series(df_rodowody['ID_bull'].values, index=df_rodowody['Display_name']).to_dict()
-        id_do_nazwy_map = pd.Series(df_rodowody['Bull_name'].values, index=df_rodowody['ID_bull']).to_dict()
-        id_do_rodzicow_map = pd.Series(zip(df_rodowody['ID_Sire'], df_rodowody['ID_Dam']), index=df_rodowody['ID_bull']).to_dict()
-            
-        return df_rodowody, df_crv, nazwa_to_id_map, id_do_rodzicow_map, id_do_nazwy_map
-    except Exception as e:
-        st.error(f"Błąd danych: {e}")
-        return None, None, None, None, None
+    # 3. Czyszczenie i przygotowanie kolumn wyświetlanych
+    df_rodowody = df_rodowody[df_rodowody['ID_bull'] != "BRAK"].drop_duplicates(subset=['ID_bull'])
+    df_rodowody['Display_name'] = df_rodowody['Bull_name'] + " (" + df_rodowody['ID_bull'] + ")"
+    
+    # 4. Tworzenie map pomocniczych do obliczeń
+    nazwa_to_id_map = pd.Series(df_rodowody['ID_bull'].values, index=df_rodowody['Display_name']).to_dict()
+    id_do_nazwy_map = pd.Series(df_rodowody['Bull_name'].values, index=df_rodowody['ID_bull']).to_dict()
+    id_do_rodzicow_map = pd.Series(zip(df_rodowody['ID_Sire'], df_rodowody['ID_Dam']), index=df_rodowody['ID_bull']).to_dict()
+
+    # --- TUTAJ MOŻESZ DALEJ PISAĆ KOD KALKULATORA (np. st.selectbox) ---
+    st.info("Gotowe do wyboru buhaja!")
 
 # --- SILNIK REKURENCYJNY ---
 def pobierz_drzewo_z_poziomem(start_id, _id_do_rodzicow_map, max_g, poziom_startowy):
