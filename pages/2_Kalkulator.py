@@ -1,16 +1,14 @@
 import streamlit as st
 import pandas as pd
 import os
-import base64  # zostawiamy, jeśli używasz go np. do wyświetlania logo lub pobierania plików
+import base64
 
-# --- KONFIGURACJA ŚCIEŻEK ---
-# Usuwamy stare ścieżki do Google Cloud. Używamy tylko lokalnych:
+# --- 1. KONFIGURACJA STRONY ---
+st.set_page_config(page_title="Kalkulator Doboru", page_icon="🐄", layout="wide")
+
 SCIEZKA_RODOWODY = "rodowody.parquet"
 SCIEZKA_OFERTA = "Oferta CRV.xlsx"
 
-st.set_page_config(page_title="Kalkulator Doboru", page_icon="🐄", layout="wide")
-
-# --- MAPA CECH (Techniczna Nazwa : Ładna Nazwa) ---
 MAPA_CECH = {
     "Kg_mleka": "Kilogramy mleka",
     "%_tluszczu": "% tłuszczu",
@@ -31,87 +29,64 @@ MAPA_CECH = {
     "Dlugosc_strzykow": "Długość strzyków"
 }
 
-# --- FUNKCJA TŁA ---
+# --- 2. FUNKCJE POMOCNICZE ---
 def dodaj_tlo(nazwa_pliku):
     try:
-        with open(nazwa_pliku, "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode()
-        st.markdown(
-        f"""
-        <style>
-        .stApp {{
-            background-image: linear-gradient(to bottom, white 50%, rgba(255,255,255,0) 100%),
-                              linear-gradient(rgba(255,255,255,0.7), rgba(255,255,255,0.7)),
-                              url(data:image/jpg;base64,{encoded_string});
-            background-position: bottom; background-repeat: no-repeat; background-size: cover;
-        }}
-        </style>
-        """, unsafe_allow_html=True)
+        if os.path.exists(nazwa_pliku):
+            with open(nazwa_pliku, "rb") as image_file:
+                encoded_string = base64.b64encode(image_file.read()).decode()
+            st.markdown(f"""
+                <style>
+                .stApp {{
+                    background-image: linear-gradient(to bottom, white 50%, rgba(255,255,255,0) 100%),
+                                      linear-gradient(rgba(255,255,255,0.7), rgba(255,255,255,0.7)),
+                                      url(data:image/jpg;base64,{encoded_string});
+                    background-position: bottom; background-repeat: no-repeat; background-size: cover;
+                }}
+                </style>""", unsafe_allow_html=True)
     except: pass
 
-# --- WCZYTYWANIE DANYCH ---
 @st.cache_data
-def wczytaj_dane():
+def wczytaj_i_przygotuj_dane():
     try:
-        # 1. Sprawdzenie czy pliki istnieją
-        if not os.path.exists(SCIEZKA_RODOWODY):
-            st.error(f"❌ Nie znaleziono pliku: {SCIEZKA_RODOWODY}")
-            return None, None
-            
-        # 2. Odczyt danych (dodajemy engine='pyarrow')
-        df_rodowody = pd.read_parquet(SCIEZKA_RODOWODY, engine='pyarrow')
-        df_crv = pd.read_excel(SCIEZKA_OFERTA, dtype=str)
-        
-        # 3. Czyszczenie nazw kolumn
-        df_rodowody.columns = df_rodowody.columns.str.strip()
-        df_crv.columns = df_crv.columns.str.strip()
+        if not os.path.exists(SCIEZKA_RODOWODY) or not os.path.exists(SCIEZKA_OFERTA):
+            return None, None, None, None, None
 
-        return df_rodowody, df_crv
+        # Odczyt
+        df_rod = pd.read_parquet(SCIEZKA_RODOWODY, engine='pyarrow')
+        df_off = pd.read_excel(SCIEZKA_OFERTA, dtype=str)
+
+        # Czyszczenie nazw kolumn
+        df_rod.columns = df_rod.columns.str.strip()
+        df_off.columns = df_off.columns.str.strip()
+
+        # Normalizacja nazw kluczowych kolumn
+        rename_map = {'ID_Bull': 'ID_bull', 'ID_sire': 'ID_Sire', 'ID_sire_of_dam': 'ID_Maternal_Grand_Sire'}
+        df_rod = df_rod.rename(columns=rename_map)
+        df_off = df_off.rename(columns=rename_map)
+
+        # Standaryzacja zawartości (To zapobiega 502, robimy to raz w cache)
+        cols_to_std = ['ID_bull', 'ID_Sire', 'ID_Dam', 'Bull_name', 'ID_Maternal_Grand_Sire', 'ID_Maternal_Grand_Dam_Sire']
+        for df_temp in [df_rod, df_off]:
+            for col in cols_to_std:
+                if col in df_temp.columns:
+                    df_temp[col] = df_temp[col].astype(str).str.strip().replace(['nan', 'None', '', 'nan '], 'BRAK')
+
+        # Przygotowanie wyświetlania
+        df_rod = df_rod[df_rod['ID_bull'] != "BRAK"].drop_duplicates(subset=['ID_bull'])
+        df_rod['Display_name'] = df_rod['Bull_name'] + " (" + df_rod['ID_bull'] + ")"
+
+        # Mapy pomocnicze
+        n2id = pd.Series(df_rod['ID_bull'].values, index=df_rod['Display_name']).to_dict()
+        id2n = pd.Series(df_rod['Bull_name'].values, index=df_rod['ID_bull']).to_dict()
+        id2rodzic = pd.Series(zip(df_rod['ID_Sire'], df_rod['ID_Dam']), index=df_rod['ID_bull']).to_dict()
+
+        return df_rod, df_off, n2id, id2rodzic, id2n
     except Exception as e:
-        st.error(f"❌ Błąd wczytywania: {e}")
-        return None, None
+        st.error(f"Błąd krytyczny danych: {e}")
+        return None, None, None, None, None
 
-# --- URUCHOMIENIE ---
-dodaj_tlo("tlo_kalkulator.jpg") # Pamiętaj o poprawnej nazwie pliku tła
-
-# Wywołanie funkcji wczytującej
-df_rodowody, df_crv = wczytaj_dane()
-
-# Sprawdzenie czy dane są dostępne, zanim kod pójdzie dalej
-if df_rodowody is not None:
-    st.success("✅ Baza załadowana!")
-
-    # --- Dalsza część standaryzacji (renaming i mapy) ---
-
-    # 1. Normalizacja nazw kolumn
-    rename_map = {
-        'ID_Bull': 'ID_bull', 
-        'ID_sire': 'ID_Sire', 
-        'ID_sire_of_dam': 'ID_Maternal_Grand_Sire'
-    }
-    df_rodowody = df_rodowody.rename(columns=rename_map)
-    df_crv = df_crv.rename(columns=rename_map)
-    
-    # 2. Standaryzacja tekstów (wyrównane wcięcia)
-    cols_to_std = ['ID_bull', 'ID_Sire', 'ID_Dam', 'Bull_name', 'ID_Maternal_Grand_Sire', 'ID_Maternal_Grand_Dam_Sire']
-    for df_temp in [df_rodowody, df_crv]:
-        for col in cols_to_std:
-            if col in df_temp.columns:
-                df_temp[col] = df_temp[col].astype(str).str.strip().replace(['nan', 'None', '', 'nan '], 'BRAK')
-
-    # 3. Czyszczenie i przygotowanie kolumn wyświetlanych
-    df_rodowody = df_rodowody[df_rodowody['ID_bull'] != "BRAK"].drop_duplicates(subset=['ID_bull'])
-    df_rodowody['Display_name'] = df_rodowody['Bull_name'] + " (" + df_rodowody['ID_bull'] + ")"
-    
-    # 4. Tworzenie map pomocniczych do obliczeń
-    nazwa_to_id_map = pd.Series(df_rodowody['ID_bull'].values, index=df_rodowody['Display_name']).to_dict()
-    id_do_nazwy_map = pd.Series(df_rodowody['Bull_name'].values, index=df_rodowody['ID_bull']).to_dict()
-    id_do_rodzicow_map = pd.Series(zip(df_rodowody['ID_Sire'], df_rodowody['ID_Dam']), index=df_rodowody['ID_bull']).to_dict()
-
-    # --- TUTAJ MOŻESZ DALEJ PISAĆ KOD KALKULATORA (np. st.selectbox) ---
-    st.info("Gotowe do wyboru buhaja!")
-
-# --- SILNIK REKURENCYJNY ---
+# --- 3. SERCE APLIKACJI (Bez zmian w logice) ---
 def pobierz_drzewo_z_poziomem(start_id, _id_do_rodzicow_map, max_g, poziom_startowy):
     drzewo = {}
     def _szukaj(cid, g):
@@ -126,11 +101,13 @@ def pobierz_drzewo_z_poziomem(start_id, _id_do_rodzicow_map, max_g, poziom_start
     _szukaj(start_id, poziom_startowy)
     return drzewo
 
-# --- START APLIKACJI ---
-dodaj_tlo('tlo_kalkulator.jpg')
-df_rodowody, df_crv, nazwa_to_id_map, id_do_rodzicow_map, id_do_nazwy_map = wczytaj_dane()
+# --- 4. URUCHOMIENIE INTERFEJSU ---
+dodaj_tlo("tlo_kalkulator.jpg")
+df_rodowody, df_crv, nazwa_to_id_map, id_do_rodzicow_map, id_do_nazwy_map = wczytaj_i_przygotuj_dane()
 
 if df_rodowody is not None:
+    st.success("✅ Baza załadowana!")
+    
     st.sidebar.header("Ustawienia analizy")
     prog = st.sidebar.selectbox("Dopuszczalne pokrewieństwo:", [4, 6, 10, 12], index=1)
     mapowanie_glebokosci = {4: 14, 6: 12, 10: 8, 12: 6}
@@ -143,52 +120,38 @@ if df_rodowody is not None:
     c1, c2 = st.columns(2)
     with c1:
         wybrane_rasy = st.multiselect("Wybierz rasy:", sorted(df_crv['Rasa'].unique().tolist()) if 'Rasa' in df_crv.columns else [])
-        
     with c2:
         a2a2 = st.checkbox("Beta-kazeina A2A2")
         kappa = st.checkbox("Kappa-kazeina AB/BB")
         robot = st.checkbox("Indeks robotowy")
 
-    # --- POPRAWIONE SUWAKI DLA CECH FUNKCJONALNYCH ---
-    st.subheader("Dodatkowe cechy:")
-    
-    # Filtrujemy tylko te kolumny, które istnieją w pliku Excel i są w naszej MAPA_CECH
+    st.subheader("Dodatkowe cechy funkcjonalne:")
     dostepne_cechy = [col for col in MAPA_CECH.keys() if col in df_crv.columns]
-    
-    wybrane_techniczne = st.multiselect(
-        "Wybierz cechy do ustawienia parametrów:",
-        options=dostepne_cechy,
-        format_func=lambda x: MAPA_CECH[x] # Tutaj zamieniamy tech-nazwę na ładną polską nazwę
-    )
+    wybrane_techniczne = st.multiselect("Wybierz cechy do ustawienia parametrów:", options=dostepne_cechy, format_func=lambda x: MAPA_CECH[x])
     
     kryteria_suwakow = []
     for tech_name in wybrane_techniczne:
         pretty_name = MAPA_CECH[tech_name]
         dane_kolumny = pd.to_numeric(df_crv[tech_name], errors='coerce').dropna()
-        
         if not dane_kolumny.empty:
-            min_v = float(dane_kolumny.min())
-            max_v = float(dane_kolumny.max())
-            med_v = float(dane_kolumny.median())
-            
-            # Formaty dla procentów
+            min_v, max_v, med_v = float(dane_kolumny.min()), float(dane_kolumny.max()), float(dane_kolumny.median())
             if tech_name in ["%_tluszczu", "%_bialka"]:
                 v = st.slider(f"Min. {pretty_name}", min_v, max_v, med_v, step=0.01, format="%.2f")
             else:
                 v = st.slider(f"Min. {pretty_name}", int(min_v), int(max_v), int(med_v), step=1)
-            
             kryteria_suwakow.append((tech_name, v))
 
     if st.button("🐮 Rozpocznij analizę doboru", type="primary", use_container_width=True):
         if not wybrane_nazwy:
             st.warning("Najpierw wskaż buhaje używane w stadzie.")
         else:
-            with st.spinner("Analiza..."):
-                id_stada = [nazwa_to_id_map[n] for n in wybrane_nazwy]
+            with st.spinner("Analiza drzew genealogicznych..."):
+                # Budowanie mapy konfliktów stada
                 mapa_konfliktow_stada = {}
                 for nazwa_wyswietlana in wybrane_nazwy:
                     ids_stada = nazwa_to_id_map[nazwa_wyswietlana]
                     nazwa_czysta = id_do_nazwy_map.get(ids_stada, nazwa_wyswietlana)
+                    
                     def _buduj_stado(cid, g):
                         if cid in ["BRAK", "nan", ""] or g > 6: return
                         if cid not in mapa_konfliktow_stada: mapa_konfliktow_stada[cid] = nazwa_czysta
@@ -198,6 +161,7 @@ if df_rodowody is not None:
                             _buduj_stado(o, g + 1); _buduj_stado(m, g + 1)
                     _buduj_stado(ids_stada, 0)
 
+                # Filtrowanie oferty
                 df_wynik = df_crv.copy()
                 if wybrane_rasy: df_wynik = df_wynik[df_wynik['Rasa'].isin(wybrane_rasy)]
                 if a2a2 and 'Beta_kazeina' in df_wynik.columns: df_wynik = df_wynik[df_wynik['Beta_kazeina'] == 'A2A2']
@@ -210,6 +174,7 @@ if df_rodowody is not None:
                 finalne = []
                 raport_detektywa = []
 
+                # Analiza inbredu dla przefiltrowanej oferty
                 for idx, wiersz in df_wynik.iterrows():
                     id_o = str(wiersz.get('ID_bull', 'BRAK'))
                     sondy = [
@@ -234,7 +199,7 @@ if df_rodowody is not None:
                         odleglosc = pelne_drzewo_oferty[najblizszy_id]
                         nazwa_p = id_do_nazwy_map.get(najblizszy_id, najblizszy_id)
                         winowajca = mapa_konfliktow_stada[najblizszy_id]
-                        relacja = {0: "TEN SAM BUHAJ", 1: "OJCIEC", 2: "DZIADEK", 3: "PRADZIADEK", 4: "PRAPRADZIADEK"}.get(odleglosc, f"{odleglosc}. POKOLENIE")
+                        relacja = {0: "TEN SAM BUHAJ", 1: "OJCIEC", 2: "DZIADEK", 3: "PRADZIADEK"}.get(odleglosc, f"{odleglosc}. POKOLENIE")
                         raport_detektywa.append({
                             "Buhaj z oferty": wiersz['Bull_name'],
                             "Konflikt z buhajem ze stada": winowajca,
@@ -245,6 +210,11 @@ if df_rodowody is not None:
                 if finalne:
                     st.success(f"Znaleziono {len(finalne)} bezpiecznych buhajów.")
                     st.dataframe(pd.DataFrame(finalne)[['Bull_name', 'ID_bull', 'Rasa']], use_container_width=True)
-                else: st.error("Brak dopasowań.")
+                else:
+                    st.error("Brak buhajów spełniających wszystkie kryteria bezpieczeństwa i selekcji.")
+                
                 if raport_detektywa:
-                    with st.expander("🕵️ SZCZEGÓŁOWA ANALIZA KONFLIKTÓW"): st.table(pd.DataFrame(raport_detektywa))
+                    with st.expander("🕵️ SZCZEGÓŁOWA ANALIZA ODRZUCONYCH KONFLIKTÓW"):
+                        st.table(pd.DataFrame(raport_detektywa))
+else:
+    st.error("Nie udało się załadować plików danych. Sprawdź czy rodowody.parquet i Oferta CRV.xlsx są w głównym folderze.")
