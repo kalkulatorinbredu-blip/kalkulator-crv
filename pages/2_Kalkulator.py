@@ -4,10 +4,11 @@ import os
 import base64  # zostawiamy, jeśli używasz go np. do wyświetlania logo lub pobierania plików
 
 # --- KONFIGURACJA ŚCIEŻEK ---
-SCIEZKA_LOKALNA_DO_KLUCZA_JSON = "noted-wares-474211-g2-e39e145b3780.json"
-SCIEZKA_GS_DO_RODOWODOW = "gs://dane_kalkulator_inbredowy_anna/rodowody.xlsx"
+# Usuwamy stare ścieżki do Google Cloud. Używamy tylko lokalnych:
+SCIEZKA_RODOWODY = "rodowody.parquet"
+SCIEZKA_OFERTA = "Oferta CRV.xlsx"
 
-st.set_page_config(page_title="Kalkulator Doboru", page_icon="🐮", layout="wide")
+st.set_page_config(page_title="Kalkulator Doboru", page_icon="🐄", layout="wide")
 
 # --- MAPA CECH (Techniczna Nazwa : Ładna Nazwa) ---
 MAPA_CECH = {
@@ -52,21 +53,34 @@ def dodaj_tlo(nazwa_pliku):
 @st.cache_data
 def wczytaj_dane():
     try:
-        # 1. Ścieżki do plików lokalnych (są w tym samym folderze na Renderze)
-        sciezka_rodowody = 'rodowody.parquet'
-        sciezka_oferta = 'Oferta CRV.xlsx'
-        
-        # 2. Szybki odczyt danych
-        if not os.path.exists(sciezka_rodowody):
-            st.error(f"❌ Nie znaleziono pliku: {sciezka_rodowody}")
-            return None, None, None, None, None
+        # 1. Sprawdzenie czy pliki istnieją
+        if not os.path.exists(SCIEZKA_RODOWODY):
+            st.error(f"❌ Nie znaleziono pliku: {SCIEZKA_RODOWODY}")
+            return None, None
             
-        df_rodowody = pd.read_parquet(sciezka_rodowody)
-        df_crv = pd.read_excel(sciezka_oferta, dtype=str)
+        # 2. Odczyt danych (dodajemy engine='pyarrow')
+        df_rodowody = pd.read_parquet(SCIEZKA_RODOWODY, engine='pyarrow')
+        df_crv = pd.read_excel(SCIEZKA_OFERTA, dtype=str)
         
         # 3. Czyszczenie nazw kolumn
         df_rodowody.columns = df_rodowody.columns.str.strip()
         df_crv.columns = df_crv.columns.str.strip()
+
+        return df_rodowody, df_crv
+    except Exception as e:
+        st.error(f"❌ Błąd wczytywania: {e}")
+        return None, None
+
+# --- URUCHOMIENIE ---
+dodaj_tlo("tlo_kalkulator.jpg") # Pamiętaj o poprawnej nazwie pliku tła
+
+# Wywołanie funkcji wczytującej
+df_rodowody, df_crv = wczytaj_dane()
+
+# Sprawdzenie czy dane są dostępne, zanim kod pójdzie dalej
+if df_rodowody is not None:
+    st.success("✅ Baza załadowana!")
+    # Tutaj idzie reszta Twojego kodu kalkulatora...
 
         # --- Dalsza część standaryzacji (renaming i mapy) zostaje bez zmian ---
 
